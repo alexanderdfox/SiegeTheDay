@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Siege Workshop – Mobile Edition</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{overflow:hidden;font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a12;color:#eee;user-select:none}
+  #ui{
+    position:absolute;top:12px;left:12px;width:310px;
+    background:rgba(12,12,20,0.93);backdrop-filter:blur(10px);
+    padding:16px;border-radius:14px;border:1px solid #333;
+    box-shadow:0 10px 40px rgba(0,0,0,0.55);z-index:30
+  }
+  h2{font-size:1.25rem;color:#fbbf24;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+  .control-group{margin-bottom:13px}
+  label{display:block;font-size:.78rem;color:#aaa;margin-bottom:4px}
+  select,button{
+    width:100%;padding:9px 12px;border-radius:7px;border:1px solid #444;
+    background:#1c1c2a;color:#fff;font-size:.95rem;cursor:pointer
+  }
+  #fireBtn{
+    background:linear-gradient(180deg,#f59e0b,#d97706);font-weight:700;
+    font-size:1.05rem;letter-spacing:.4px;margin-top:4px;transition:transform .1s,filter .15s
+  }
+  #fireBtn:hover{filter:brightness(1.12)}
+  #fireBtn:active,#fireBtn.charging{transform:scale(.97)}
+  #resetBtn{background:#374151;margin-top:8px}
+  #chargeBar{height:9px;background:#222;border-radius:5px;margin-top:8px;overflow:hidden;display:none}
+  #chargeFill{height:100%;width:0;background:linear-gradient(90deg,#22c55e,#fbbf24,#ef4444);transition:width .04s linear}
+  #stats{
+    position:absolute;top:12px;right:12px;background:rgba(12,12,20,0.93);
+    padding:12px 18px;border-radius:12px;border:1px solid #333;font-size:.95rem;z-index:30
+  }
+  #stats span{color:#fbbf24;font-weight:700}
+  #instructions{
+    position:absolute;bottom:14px;left:14px;background:rgba(0,0,0,.7);
+    padding:11px 15px;border-radius:10px;font-size:.76rem;line-height:1.5;
+    max-width:380px;pointer-events:none;z-index:30
+  }
+  #message{
+    position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+    font-size:2.6rem;font-weight:800;color:#fbbf24;text-shadow:0 4px 24px rgba(0,0,0,.85);
+    opacity:0;transition:opacity .45s;pointer-events:none;z-index:40
+  }
+  #message.show{opacity:1}
+  kbd{background:#333;padding:1px 5px;border-radius:3px;font-size:.7rem}
+</style>
+</head>
+<body>
+<div id="ui">
+  <h2>⚔️ Siege Workshop</h2>
+  <div class="control-group">
+    <label>Weapon</label>
+    <select id="weaponSelect">
+      <option value="trebuchet">Trebuchet (high arc)</option>
+      <option value="catapult">Catapult (balanced)</option>
+      <option value="ballista">Ballista (fast & flat)</option>
+    </select>
+  </div>
+  <div class="control-group">
+    <label>Power (hold FIRE / Space)</label>
+    <div id="chargeBar"><div id="chargeFill"></div></div>
+  </div>
+  <button id="fireBtn">HOLD TO CHARGE & FIRE</button>
+  <button id="resetBtn">Reset Castle</button>
+</div>
+
+<div id="stats">
+  Score: <span id="scoreVal">0</span><br>
+  Hits: <span id="hitsVal">0</span> / <span id="totalBlocks">20</span>
+</div>
+
+<div id="instructions">
+  <strong>Drive & Fight</strong><br>
+  • <kbd>W</kbd><kbd>S</kbd> / ↑↓ – Accelerate / Reverse<br>
+  • <kbd>A</kbd><kbd>D</kbd> / ←→ – Steer<br>
+  • Left-drag – Aim elevation & fine yaw<br>
+  • Hold <kbd>Space</kbd> or FIRE button – Charge & release to shoot<br>
+  • Right-drag – Orbit camera | Scroll – Zoom<br>
+  Destroy every block!
+</div>
+
+<div id="message"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ═══════════════════════════════════════════════════
+// Scene setup
+// ═══════════════════════════════════════════════════
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0a12);
+scene.fog = new THREE.FogExp2(0x0a0a12, 0.011);
+
+const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.1, 500);
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+scene.add(new THREE.AmbientLight(0x404060, 0.42));
+const sun = new THREE.DirectionalLight(0xfff0d0, 1.15);
+sun.position.set(40, 55, 25);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.near = 5;
+sun.shadow.camera.far = 140;
+sun.shadow.camera.left = sun.shadow.camera.bottom = -50;
+sun.shadow.camera.right = sun.shadow.camera.top = 50;
+scene.add(sun);
+
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(400, 400),
+  new THREE.MeshStandardMaterial({color:0x152015, roughness:0.92})
+);
+ground.rotation.x = -Math.PI/2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+const grid = new THREE.GridHelper(300, 60, 0x2a2a3a, 0x1a1a28);
+grid.position.y = 0.015;
+scene.add(grid);
+
+// ═══════════════════════════════════════════════════
+// Materials
+// ═══════════════════════════════════════════════════
+const woodMat  = new THREE.MeshStandardMaterial({color:0x8B5A2B, roughness:0.75});
+const darkWood = new THREE.MeshStandardMaterial({color:0x5c3a1e, roughness:0.8});
+const ironMat  = new THREE.MeshStandardMaterial({color:0x3a3a3a, metalness:0.85, roughness:0.25});
+const stoneMat = new THREE.MeshStandardMaterial({color:0x7a7a7a, roughness:0.85});
+const boltMat  = new THREE.MeshStandardMaterial({color:0x222222, metalness:0.9, roughness:0.3});
+const ropeMat  = new THREE.MeshStandardMaterial({color:0xc4a35a, roughness:0.9});
+
+// ═══════════════════════════════════════════════════
+// Game state
+// ═══════════════════════════════════════════════════
+let projectiles = [], particles = [], targets = [];
+let score = 0, hits = 0;
+let activeWeapon = null;
+let isCharging = false, charge = 0;
+let aimPitch = 0.38;                 // elevation only (yaw comes from vehicle heading)
+let isAiming = false, isOrbiting = false;
+let prevMouse = {x:0, y:0};
+let camAngle = 0.4, camHeight = 16, camDist = 32;
+let trajectoryLine = null;
+
+// Vehicle physics
+const vehicle = {
+  pos: new THREE.Vector3(0, 0, 18),
+  heading: 0,          // radians, 0 = facing -Z
+  speed: 0,
+  maxSpeed: 18,
+  accel: 28,
+  brake: 40,
+  turnRate: 1.8,
+  friction: 12
+};
+
+// Input
+const keys = {};
+window.addEventListener('keydown', e => { keys[e.code] = true; if(['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault(); });
+window.addEventListener('keyup',   e => { keys[e.code] = false; });
+
+// ═══════════════════════════════════════════════════
+// Audio helpers
+// ═══════════════════════════════════════════════════
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+function playTone(freq, type, dur, vol=0.12){
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.type = type; o.frequency.value = freq;
+  g.gain.setValueAtTime(vol, audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+  o.connect(g); g.connect(audioCtx.destination);
+  o.start(); o.stop(audioCtx.currentTime + dur);
+}
+function sfxWhoosh(){ playTone(160+Math.random()*90,'sawtooth',0.28,0.09); }
+function sfxImpact(){ playTone(85,'square',0.14,0.22); playTone(38,'sawtooth',0.32,0.13); }
+
+// ═══════════════════════════════════════════════════
+// Weapon builders (now with rotatable wheels)
+// ═══════════════════════════════════════════════════
+function createWeapon(type){
+  if(activeWeapon) scene.remove(activeWeapon);
+  const g = new THREE.Group();
+  g.wheels = [];                       // store wheel meshes for rotation
+
+  if(type === 'trebuchet'){
+    const base = new THREE.Mesh(new THREE.BoxGeometry(3.4,0.55,5.2), woodMat);
+    base.position.y = 0.55; base.castShadow = true; g.add(base);
+    // legs
+    [[-1.4,-0.18],[1.4,0.18]].forEach(([x,rz])=>{
+      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.38,5.4,0.38), woodMat);
+      leg.position.set(x,3.0,0); leg.rotation.z = rz; leg.castShadow = true; g.add(leg);
+    });
+    const cross = new THREE.Mesh(new THREE.BoxGeometry(3.4,0.32,0.32), darkWood);
+    cross.position.set(0,5.3,0); g.add(cross);
+    // arm
+    const arm = new THREE.Group(); arm.name = 'arm'; arm.position.set(0,5.3,0);
+    const beam = new THREE.Mesh(new THREE.BoxGeometry(0.42,0.42,8.2), woodMat);
+    beam.castShadow = true; arm.add(beam);
+    const cw = new THREE.Mesh(new THREE.BoxGeometry(1.5,1.35,1.15), ironMat);
+    cw.position.set(0,-0.75,-3.3); arm.add(cw);
+    const pouch = new THREE.Mesh(new THREE.SphereGeometry(0.48,8,6), ropeMat);
+    pouch.position.set(0,0.12,3.7); arm.add(pouch);
+    g.add(arm);
+    // wheels
+    [[-1.5,1.7],[-1.5,-1.7],[1.5,1.7],[1.5,-1.7]].forEach(([x,z])=>{
+      const w = new THREE.Mesh(new THREE.CylinderGeometry(0.65,0.65,0.35,14), darkWood);
+      w.rotation.z = Math.PI/2; w.position.set(x,0.65,z); w.castShadow = true;
+      g.add(w); g.wheels.push(w);
+    });
+  }
+  else if(type === 'catapult'){
+    const base = new THREE.Mesh(new THREE.BoxGeometry(3.0,0.65,4.4), woodMat);
+    base.position.y = 0.6; base.castShadow = true; g.add(base);
+    [[-1.4,1.5],[-1.4,-1.5],[1.4,1.5],[1.4,-1.5]].forEach(([x,z])=>{
+      const w = new THREE.Mesh(new THREE.CylinderGeometry(0.6,0.6,0.32,12), darkWood);
+      w.rotation.z = Math.PI/2; w.position.set(x,0.6,z); w.castShadow = true;
+      g.add(w); g.wheels.push(w);
+    });
+    const arm = new THREE.Group(); arm.name = 'arm'; arm.position.set(0,1.05,-1.15);
+    const beam = new THREE.Mesh(new THREE.BoxGeometry(0.52,0.38,5.7), woodMat);
+    beam.position.z = 1.85; beam.castShadow = true; arm.add(beam);
+    const cup = new THREE.Mesh(new THREE.CylinderGeometry(0.72,0.52,0.55,10,1,true), ironMat);
+    cup.position.set(0,0.38,4.35); arm.add(cup);
+    g.add(arm);
+  }
+  else{ // ballista
+    const base = new THREE.Mesh(new THREE.BoxGeometry(2.8,0.95,3.7), woodMat);
+    base.position.y = 0.7; base.castShadow = true; g.add(base);
+    const rail = new THREE.Mesh(new THREE.BoxGeometry(0.48,0.38,5.7), darkWood);
+    rail.position.set(0,1.35,0); g.add(rail);
+    [[-1.45,-0.55],[1.45,0.55]].forEach(([x,rz])=>{
+      const bow = new THREE.Mesh(new THREE.CylinderGeometry(0.13,0.24,4.0,8), woodMat);
+      bow.position.set(x,1.55,-1.7); bow.rotation.z = rz; bow.castShadow = true; g.add(bow);
+    });
+    const str = new THREE.Mesh(new THREE.CylinderGeometry(0.035,0.035,2.7,6), ropeMat);
+    str.rotation.z = Math.PI/2; str.position.set(0,1.55,-1.7); g.add(str);
+    [[-1.3,1.4],[-1.3,-1.4],[1.3,1.4],[1.3,-1.4]].forEach(([x,z])=>{
+      const w = new THREE.Mesh(new THREE.CylinderGeometry(0.55,0.55,0.3,12), darkWood);
+      w.rotation.z = Math.PI/2; w.position.set(x,0.55,z); w.castShadow = true;
+      g.add(w); g.wheels.push(w);
+    });
+  }
+
+  scene.add(g);
+  activeWeapon = g;
+  syncWeaponTransform();
+  updateTrajectory();
+}
+
+function syncWeaponTransform(){
+  if(!activeWeapon) return;
+  activeWeapon.position.copy(vehicle.pos);
+  activeWeapon.position.y = 0;
+  activeWeapon.rotation.y = vehicle.heading;
+}
+
+// ═══════════════════════════════════════════════════
+// Targets
+// ═══════════════════════════════════════════════════
+function createTargets(){
+  targets.forEach(t => scene.remove(t.mesh));
+  targets = []; hits = 0;
+  document.getElementById('hitsVal').textContent = 0;
+
+  const rows = 4, cols = 5;
+  for(let r=0;r<rows;r++){
+    for(let c=0;c<cols;c++){
+      const reinforced = Math.random() > 0.62;
+      const mesh = new THREE.Mesh(
+        new THREE.BoxGeometry(1.6,1.6,1.6),
+        new THREE.MeshStandardMaterial({
+          color: reinforced ? 0x4a2c2c : (Math.random()>0.5 ? 0x8a5050 : 0x6a6a6a),
+          roughness: 0.85
+        })
+      );
+      mesh.castShadow = mesh.receiveShadow = true;
+      const x = (c - cols/2 + 0.5) * 1.75;
+      const y = r * 1.6 + 0.85;
+      const z = -42;
+      mesh.position.set(x,y,z);
+      scene.add(mesh);
+      targets.push({
+        mesh, health: reinforced?2:1, maxHealth: reinforced?2:1,
+        vel: new THREE.Vector3(), angVel: new THREE.Vector3(), alive: true
+      });
+    }
+  }
+  document.getElementById('totalBlocks').textContent = targets.length;
+}
+
+// ═══════════════════════════════════════════════════
+// Trajectory (relative to vehicle heading + aimPitch)
+// ═══════════════════════════════════════════════════
+function updateTrajectory(){
+  if(trajectoryLine) scene.remove(trajectoryLine);
+  const pts = [];
+  const power = 38 + charge * 0.72;
+  const type = document.getElementById('weaponSelect').value;
+  let speed, gravity, localStart;
+  if(type==='trebuchet'){ speed=power*0.43; gravity=18; localStart=new THREE.Vector3(0,6.8,3.8); }
+  else if(type==='catapult'){ speed=power*0.39; gravity=16; localStart=new THREE.Vector3(0,3.5,3.2); }
+  else{ speed=power*0.58; gravity=7; localStart=new THREE.Vector3(0,2.0,3.0); }
+
+  // world direction from vehicle heading + elevation
+  const dir = new THREE.Vector3(
+    Math.sin(vehicle.heading) * Math.cos(aimPitch),
+    Math.sin(aimPitch),
+    -Math.cos(vehicle.heading) * Math.cos(aimPitch)
+  ).normalize();
+
+  // start position in world space
+  const start = localStart.clone();
+  start.applyAxisAngle(new THREE.Vector3(0,1,0), vehicle.heading);
+  start.add(vehicle.pos);
+
+  let pos = start.clone();
+  let vel = dir.clone().multiplyScalar(speed);
+
+  for(let i=0;i<90;i++){
+    pts.push(pos.clone());
+    vel.y -= gravity * 0.045;
+    pos.addScaledVector(vel, 0.045);
+    if(pos.y < 0) break;
+  }
+  const geo = new THREE.BufferGeometry().setFromPoints(pts);
+  trajectoryLine = new THREE.Line(geo, new THREE.LineBasicMaterial({
+    color:0xfbbf24, transparent:true, opacity:0.55
+  }));
+  scene.add(trajectoryLine);
+}
+
+// ═══════════════════════════════════════════════════
+// Fire
+// ═══════════════════════════════════════════════════
+function fire(){
+  const power = Math.max(22, charge);
+  const type = document.getElementById('weaponSelect').value;
+  sfxWhoosh();
+
+  // weapon animation
+  const arm = activeWeapon.getObjectByName('arm');
+  if(arm){
+    const target = type==='trebuchet' ? 1.15 : -1.35;
+    const startRot = arm.rotation.x;
+    let t=0;
+    (function anim(){
+      t += 0.055;
+      arm.rotation.x = THREE.MathUtils.lerp(startRot, target, Math.min(t,1));
+      if(t < 1.7) requestAnimationFrame(anim);
+      else arm.rotation.x = THREE.MathUtils.lerp(arm.rotation.x, 0, 0.07);
+    })();
+  }
+
+  setTimeout(()=>{
+    let geo, mat, localStart, speedMult, grav;
+    if(type==='ballista'){
+      geo = new THREE.ConeGeometry(0.19,2.3,8); geo.rotateX(Math.PI/2);
+      mat = boltMat; localStart = new THREE.Vector3(0,2.0,3.0);
+      speedMult=0.64; grav=6.5;
+    }else{
+      geo = new THREE.SphereGeometry(0.5,14,12); mat = stoneMat;
+      if(type==='trebuchet'){ localStart=new THREE.Vector3(0,6.8,3.8); speedMult=0.41; grav=18; }
+      else{ localStart=new THREE.Vector3(0,3.5,3.2); speedMult=0.37; grav=16; }
+    }
+
+    const mesh = new THREE.Mesh(geo, mat); mesh.castShadow = true;
+    const start = localStart.clone();
+    start.applyAxisAngle(new THREE.Vector3(0,1,0), vehicle.heading);
+    start.add(vehicle.pos);
+    mesh.position.copy(start);
+    scene.add(mesh);
+
+    const dir = new THREE.Vector3(
+      Math.sin(vehicle.heading)*Math.cos(aimPitch),
+      Math.sin(aimPitch),
+      -Math.cos(vehicle.heading)*Math.cos(aimPitch)
+    ).normalize();
+
+    projectiles.push({
+      mesh, vel: dir.multiplyScalar(power*speedMult),
+      gravity: grav, life: 9
+    });
+  }, type==='ballista' ? 70 : 260);
+
+  charge = 0;
+  document.getElementById('chargeFill').style.width = '0%';
+  document.getElementById('chargeBar').style.display = 'none';
+  updateTrajectory();
+}
+
+// ═══════════════════════════════════════════════════
+// Particles
+// ═══════════════════════════════════════════════════
+function spawnExplosion(pos, color=0xaaaaaa, count=20){
+  for(let i=0;i<count;i++){
+    const p = new THREE.Mesh(
+      new THREE.BoxGeometry(0.22+Math.random()*0.15,0.22,0.22),
+      new THREE.MeshBasicMaterial({color})
+    );
+    p.position.copy(pos);
+    const vel = new THREE.Vector3((Math.random()-0.5)*14, Math.random()*11+4, (Math.random()-0.5)*14);
+    scene.add(p);
+    particles.push({mesh:p, vel, life:0.85+Math.random()*0.6});
+  }
+}
+
+// ═══════════════════════════════════════════════════
+// Camera
+// ═══════════════════════════════════════════════════
+function updateCamera(dt){
+  // soft follow behind the vehicle + free orbit offset
+  const idealX = vehicle.pos.x + Math.sin(camAngle) * camDist;
+  const idealZ = vehicle.pos.z + Math.cos(camAngle) * camDist;
+  camera.position.x += (idealX - camera.position.x) * Math.min(1, dt*3.5);
+  camera.position.z += (idealZ - camera.position.z) * Math.min(1, dt*3.5);
+  camera.position.y += (camHeight - camera.position.y) * Math.min(1, dt*3);
+  camera.lookAt(vehicle.pos.x, 4, vehicle.pos.z - 6);
+}
+
+// ═══════════════════════════════════════════════════
+// Input handlers
+// ═══════════════════════════════════════════════════
+const fireBtn = document.getElementById('fireBtn');
+const chargeBar = document.getElementById('chargeBar');
+const chargeFill = document.getElementById('chargeFill');
+
+function startCharge(){
+  if(isCharging) return;
+  isCharging = true; charge = 0;
+  chargeBar.style.display = 'block';
+  fireBtn.classList.add('charging');
+  fireBtn.textContent = 'CHARGING…';
+}
+function releaseCharge(){
+  if(!isCharging) return;
+  isCharging = false;
+  fireBtn.classList.remove('charging');
+  fireBtn.textContent = 'HOLD TO CHARGE & FIRE';
+  fire();
+}
+
+fireBtn.addEventListener('mousedown', startCharge);
+fireBtn.addEventListener('mouseup', releaseCharge);
+fireBtn.addEventListener('mouseleave', ()=>{ if(isCharging) releaseCharge(); });
+window.addEventListener('keydown', e=>{ if(e.code==='Space' && !isCharging){ e.preventDefault(); startCharge(); }});
+window.addEventListener('keyup',   e=>{ if(e.code==='Space'){ e.preventDefault(); releaseCharge(); }});
+
+window.addEventListener('mousedown', e=>{
+  if(e.button===0){ isAiming=true; prevMouse={x:e.clientX,y:e.clientY}; }
+  if(e.button===2){ isOrbiting=true; prevMouse={x:e.clientX,y:e.clientY}; }
+});
+window.addEventListener('mouseup', e=>{
+  if(e.button===0) isAiming=false;
+  if(e.button===2) isOrbiting=false;
+});
+window.addEventListener('contextmenu', e=>e.preventDefault());
+
+window.addEventListener('mousemove', e=>{
+  const dx = e.clientX-prevMouse.x, dy = e.clientY-prevMouse.y;
+  prevMouse = {x:e.clientX, y:e.clientY};
+  if(isAiming){
+    // fine yaw adjustment + elevation
+    vehicle.heading -= dx * 0.0035;
+    aimPitch = THREE.MathUtils.clamp(aimPitch - dy*0.0028, 0.04, 1.2);
+    updateTrajectory();
+  }
+  if(isOrbiting){
+    camAngle -= dx*0.0065;
+    camHeight = THREE.MathUtils.clamp(camHeight + dy*0.04, 4, 40);
+  }
+});
+window.addEventListener('wheel', e=>{
+  camDist = THREE.MathUtils.clamp(camDist + e.deltaY*0.028, 14, 60);
+});
+
+document.getElementById('weaponSelect').addEventListener('change', e=>{
+  createWeapon(e.target.value);
+});
+document.getElementById('resetBtn').addEventListener('click', ()=>{
+  createTargets();
+  score=0; document.getElementById('scoreVal').textContent=0;
+  document.getElementById('message').classList.remove('show');
+  // optional: reset vehicle position
+  vehicle.pos.set(0,0,18); vehicle.heading=0; vehicle.speed=0;
+  syncWeaponTransform();
+});
+
+// ═══════════════════════════════════════════════════
+// Init
+// ═══════════════════════════════════════════════════
+createWeapon('trebuchet');
+createTargets();
+
+// ═══════════════════════════════════════════════════
+// Main loop
+// ═══════════════════════════════════════════════════
+const clock = new THREE.Clock();
+function animate(){
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05);
+
+  // ── Vehicle driving ──
+  let throttle = 0;
+  if(keys['KeyW'] || keys['ArrowUp'])   throttle = 1;
+  if(keys['KeyS'] || keys['ArrowDown']) throttle = -0.65;
+
+  if(throttle > 0) vehicle.speed += vehicle.accel * throttle * dt;
+  else if(throttle < 0) vehicle.speed += vehicle.brake * throttle * dt;
+  else vehicle.speed *= Math.max(0, 1 - vehicle.friction * dt);
+
+  vehicle.speed = THREE.MathUtils.clamp(vehicle.speed, -vehicle.maxSpeed*0.55, vehicle.maxSpeed);
+
+  // steering (more responsive at higher speed)
+  let steer = 0;
+  if(keys['KeyA'] || keys['ArrowLeft'])  steer = 1;
+  if(keys['KeyD'] || keys['ArrowRight']) steer = -1;
+  if(Math.abs(vehicle.speed) > 0.4){
+    vehicle.heading += steer * vehicle.turnRate * (vehicle.speed / vehicle.maxSpeed) * dt;
+  }
+
+  // integrate position
+  vehicle.pos.x += Math.sin(vehicle.heading) * vehicle.speed * dt;
+  vehicle.pos.z += -Math.cos(vehicle.heading) * vehicle.speed * dt;
+
+  // keep on playable area
+  vehicle.pos.x = THREE.MathUtils.clamp(vehicle.pos.x, -90, 90);
+  vehicle.pos.z = THREE.MathUtils.clamp(vehicle.pos.z, -20, 70);
+
+  syncWeaponTransform();
+
+  // rotate wheels
+  if(activeWeapon && activeWeapon.wheels){
+    const spin = vehicle.speed * dt * 1.8;
+    activeWeapon.wheels.forEach(w => { w.rotation.x += spin; });
+  }
+
+  // ── Charging ──
+  if(isCharging){
+    charge = Math.min(100, charge + dt*58);
+    chargeFill.style.width = charge + '%';
+    updateTrajectory();
+  }
+
+  // ── Projectiles ──
+  for(let i=projectiles.length-1;i>=0;i--){
+    const p = projectiles[i];
+    p.vel.y -= p.gravity * dt;
+    p.mesh.position.addScaledVector(p.vel, dt);
+    p.life -= dt;
+
+    // trail
+    if(Math.random()>0.55){
+      const t = new THREE.Mesh(
+        new THREE.SphereGeometry(0.11,4,4),
+        new THREE.MeshBasicMaterial({color:0x777777,transparent:true,opacity:0.45})
+      );
+      t.position.copy(p.mesh.position);
+      scene.add(t);
+      particles.push({mesh:t, vel:new THREE.Vector3(), life:0.35});
+    }
+
+    if(p.mesh.position.y < 0.35 || p.life<=0){
+      spawnExplosion(p.mesh.position, 0x666666, 12);
+      scene.remove(p.mesh);
+      projectiles.splice(i,1);
+      continue;
+    }
+
+    // hit targets
+    for(let j=targets.length-1;j>=0;j--){
+      const t = targets[j];
+      if(!t.alive) continue;
+      if(p.mesh.position.distanceTo(t.mesh.position) < 1.4){
+        t.health--;
+        score += 18; hits++;
+        document.getElementById('scoreVal').textContent = score;
+        document.getElementById('hitsVal').textContent = hits;
+        sfxImpact();
+        spawnExplosion(t.mesh.position, t.mesh.material.color.getHex(), 24);
+
+        const dir = t.mesh.position.clone().sub(p.mesh.position).normalize();
+        t.vel.add(dir.multiplyScalar(7+Math.random()*5));
+        t.vel.y += 5+Math.random()*4;
+        t.angVel.set((Math.random()-0.5)*10,(Math.random()-0.5)*7,(Math.random()-0.5)*10);
+
+        if(t.health<=0) t.alive = false;
+
+        scene.remove(p.mesh);
+        projectiles.splice(i,1);
+        break;
+      }
+    }
+  }
+
+  // falling blocks
+  targets.forEach(t=>{
+    if(!t.alive || t.vel.lengthSq()>0.01){
+      t.vel.y -= 24*dt;
+      t.mesh.position.addScaledVector(t.vel, dt);
+      t.mesh.rotation.x += t.angVel.x*dt;
+      t.mesh.rotation.y += t.angVel.y*dt;
+      t.mesh.rotation.z += t.angVel.z*dt;
+      t.vel.multiplyScalar(0.975);
+      if(t.mesh.position.y < -6) scene.remove(t.mesh);
+    }
+  });
+
+  // particles
+  for(let i=particles.length-1;i>=0;i--){
+    const p = particles[i];
+    p.vel.y -= 15*dt;
+    p.mesh.position.addScaledVector(p.vel, dt);
+    p.life -= dt;
+    if(p.mesh.material) p.mesh.material.opacity = Math.max(0, p.life);
+    if(p.life<=0){ scene.remove(p.mesh); particles.splice(i,1); }
+  }
+
+  // win
+  const remaining = targets.filter(t=>t.alive && t.mesh.parent).length;
+  if(remaining===0 && hits>0){
+    const msg = document.getElementById('message');
+    msg.textContent = 'CASTLE DESTROYED!';
+    msg.classList.add('show');
+  }
+
+  updateCamera(dt);
+  renderer.render(scene, camera);
+}
+animate();
+
+window.addEventListener('resize', ()=>{
+  camera.aspect = innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
